@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import time
+import io
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="VAT Audit & KDV-1 Automation", page_icon="⚖️", layout="wide")
@@ -27,6 +28,8 @@ lang_dict = {
         "status_diff": "⚠️ Tutar Farkı",
         "report_title": "🚨 İSTİSNA VE HATA RAPORU",
         "report_desc": "Sistem sadece sorunlu olan kayıtları aşağıya döktü.",
+        "excel_title": "📦 Kalem Bazlı Detay Raporu (Mal/Hizmet İçerikleri)",
+        "excel_btn": "📥 Alış Faturaları Detay Listesini İndir (.xlsx)",
         "analysis_title": "📉 GİDER VE MALİYET ANALİZİ (En Çok Alım Yapılanlar)",
         "analysis_total": "ALIMLAR GENEL DİP TOPLAM",
         "vat_title": "📊 KDV-1 Taslağı (Netleşmiş Verilerle)",
@@ -57,6 +60,8 @@ lang_dict = {
         "status_diff": "⚠️ Amount Mismatch",
         "report_title": "🚨 EXCEPTION & ANOMALY REPORT",
         "report_desc": "The system filtered the data and only displays problematic records below.",
+        "excel_title": "📦 Itemized Detail Report (Goods/Services)",
+        "excel_btn": "📥 Download Purchase Invoices Detail List (.xlsx)",
         "analysis_title": "📉 VENDOR & EXPENSE ANALYSIS (Top Suppliers)",
         "analysis_total": "PURCHASES GRAND TOTAL",
         "vat_title": "📊 VAT Return Draft (Reconciled Data)",
@@ -81,10 +86,9 @@ if "uploader_key" not in st.session_state:
     st.session_state["uploader_key"] = 0
 
 if st.sidebar.button(T["btn_reset"]):
-    if "temiz_xml" in st.session_state:
-        del st.session_state["temiz_xml"]
-    if "denetim_sonucu" in st.session_state:
-        del st.session_state["denetim_sonucu"]
+    for key in ["temiz_xml", "denetim_sonucu"]:
+        if key in st.session_state:
+            del st.session_state[key]
     st.session_state["uploader_key"] += 1
     st.rerun()
 
@@ -94,6 +98,7 @@ def xml_verilerini_getir():
         "Fatura No": ["GIB2026111", "ERS2026222", "FTR2026333", "GIB2026444"],
         "Firma Unvanı": ["ABC Lojistik", "XYZ Kırtasiye", "Demir Hırdavat", "Zirve Temizlik"],
         "VKN": ["1234567890", "0987654321", "1112223334", "9998887776"],
+        "Mal/Hizmet Cinsi": ["Nakliye Hizmeti", "Kırtasiye Malzemesi", "Hırdavat Aksamı", "Temizlik Malzemesi"],
         "XML KDV Haric": [50000, 1200, 8500, 10000],
         "XML KDV Tutari": [10000, 240, 1700, 2000]
     })
@@ -112,7 +117,7 @@ st.markdown("---")
 sekme_denetim, sekme_cari, sekme_beyanname = st.tabs([T["tab1"], T["tab2"], T["tab3"]])
 
 # ==========================================
-# 1. SEKME: ÇAPRAZ DENETİM (RECONCILIATION)
+# 1. SEKME: ÇAPRAZ DENETİM & EXCEL İNDİRME
 # ==========================================
 with sekme_denetim:
     col1, col2 = st.columns(2)
@@ -152,6 +157,30 @@ with sekme_denetim:
         st.dataframe(
             hatalilar[["Fatura No", "Firma Unvanı", "XML KDV Tutari", "Muavin KDV Tutari", "Durum / Status"]], 
             use_container_width=True, hide_index=True
+        )
+        
+        # --- EXCEL İNDİRME BÖLÜMÜ ---
+        st.markdown("---")
+        st.markdown(f"### {T['excel_title']}")
+        
+        def excel_olustur(df):
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                df.to_excel(writer, index=False, sheet_name='Fatura_Detaylari')
+                worksheet = writer.sheets['Fatura_Detaylari']
+                for i, col in enumerate(df.columns):
+                    column_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
+                    worksheet.set_column(i, i, column_len)
+            return output.getvalue()
+
+        excel_dosyasi = excel_olustur(st.session_state["temiz_xml"])
+        
+        st.download_button(
+            label=T["excel_btn"],
+            data=excel_dosyasi,
+            file_name="Alis_Faturalari_Kalem_Detaylari.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary"
         )
 
 # ==========================================
