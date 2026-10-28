@@ -1,0 +1,143 @@
+import streamlit as st
+import pandas as pd
+import io
+import time
+
+# --- SAYFA AYARLARI ---
+st.set_page_config(page_title="YMM Denetim & KDV-1 Otomasyonu", page_icon="??", layout="wide")
+
+st.title("?? E-Fatura & Muavin Çapraz Denetim Otomasyonu")
+st.markdown("XML faturalarýnýz ile muhasebe muavin dökümünüzü tokuþturun; hatalarý bulun, cari analizinizi yapýn ve KDV-1'i hatasýz basýn.")
+st.markdown("---")
+
+# --- MOCK / TEMEL VERÝ ÝÞLEME FONKSÝYONLARI (PANDAS) ---
+# Üstat, sen buraya kendi XML okuyucu fonksiyonunu baðlayacaksýn. 
+# Þimdilik uygulamanýn arayüzünü ve denetim motorunu görmen için test verisi üretiyoruz.
+
+def xml_verilerini_getir():
+    # Sistemin okuduðu XML verileri (Örnek)
+    return pd.DataFrame({
+        "Fatura No": ["GIB2026111", "ERS2026222", "FTR2026333", "GIB2026444"],
+        "Firma Unvaný": ["ABC Lojistik", "XYZ Kýrtasiye", "Demir Hýrdavat", "Zirve Temizlik"],
+        "VKN": ["1234567890", "0987654321", "1112223334", "9998887776"],
+        "XML KDV Haric": [50000, 1200, 8500, 10000],
+        "XML KDV Tutari": [10000, 240, 1700, 2000],
+        "Tipi": ["Alýþ", "Alýþ", "Alýþ", "Alýþ"]
+    })
+
+def muavin_verilerini_getir():
+    # Muhasebeden (Zirve/Luca) çekilen Excel muavin verileri (Örnek)
+    return pd.DataFrame({
+        "Belge No": ["GIB2026111", "FTR2026333", "GIB2026444", "KAGIT2026555"],
+        "Muavin KDV Tutari": [10000, 1700, 200, 500]  # Dikkat: Zirve Temizlik 2000 yerine 200 yazýlmýþ (Hata simülasyonu)
+    })
+
+# --- SEKMELER (TABS) ---
+sekme_denetim, sekme_cari, sekme_beyanname = st.tabs([
+    "?? 1. Çapraz Denetim (XML vs Muavin)", 
+    "?? 2. Cari & Gider Analizi", 
+    "?? 3. KDV-1 Taslaðý"
+])
+
+# ==========================================
+# 1. SEKME: ÇAPRAZ DENETÝM (RECONCILIATION)
+# ==========================================
+with sekme_denetim:
+    col1, col2 = st.columns(2)
+    with col1:
+        st.file_uploader("?? 1. E-Fatura XML Dosyalarý (Zip veya Çoklu)", accept_multiple_files=True)
+    with col2:
+        st.file_uploader("?? 2. 191/391 veya 120/320 Muavin Excel Dökümü", type=["xlsx", "xls"])
+    
+    if st.button("? Eþleþtir ve Denetim Raporunu Çýkar", type="primary", use_container_width=True):
+        with st.spinner("Pandas Motoru: XML ve Muavin satýr satýr tokuþturuluyor..."):
+            time.sleep(1) # Simülasyon
+            
+            df_xml = xml_verilerini_getir()
+            df_muavin = muavin_verilerini_getir()
+            
+            # PANDAS ÝLE ÇAPRAZ KONTROL (OUTER JOIN)
+            df_denetim = pd.merge(df_xml, df_muavin, left_on="Fatura No", right_on="Belge No", how="outer", indicator=True)
+            
+            # Hata Durumlarýný Sýnýflandýrma
+            def hata_tespit(row):
+                if row["_merge"] == "left_only": return "? Muavine Ýþlenmemiþ (Sadece XML'de)"
+                elif row["_merge"] == "right_only": return "? XML'de Yok (Manuel Ýþlenmiþ/Kaðýt Fatura)"
+                elif row["XML KDV Tutari"] != row["Muavin KDV Tutari"]: return "?? Tutar Farký (Kuruþ/Rakam Hatasý)"
+                else: return "? Kusursuz Eþleþti"
+                
+            df_denetim["Durum"] = df_denetim.apply(hata_tespit, axis=1)
+            
+            st.session_state["denetim_sonucu"] = df_denetim
+            st.session_state["temiz_xml"] = df_xml # Analizler için
+            st.rerun()
+
+    # Rapor Gösterimi
+    if "denetim_sonucu" in st.session_state:
+        st.markdown("### ?? ÝSTÝSNA VE HATA RAPORU")
+        st.info("Sistem milyonlarca satýrý taradý ve sadece **sorunlu olan kayýtlarý** aþaðýya döktü.")
+        
+        # Sadece hatalarý filtrele
+        df_goster = st.session_state["denetim_sonucu"]
+        hatalilar = df_goster[df_goster["Durum"] != "? Kusursuz Eþleþti"].copy()
+        
+        st.dataframe(
+            hatalilar[["Fatura No", "Firma Unvaný", "XML KDV Tutari", "Muavin KDV Tutari", "Durum"]], 
+            use_container_width=True, hide_index=True
+        )
+
+# ==========================================
+# 2. SEKME: CARÝ VE GÝDER ANALÝZÝ
+# ==========================================
+with sekme_cari:
+    if "temiz_xml" in st.session_state:
+        st.markdown("### ?? GÝDER VE MALÝYET ANALÝZÝ (En Çok Alým Yapýlanlar)")
+        df = st.session_state["temiz_xml"]
+        
+        # PANDAS ÝLE VKN BAZLI GRUPLAMA VE DÝP TOPLAM ALMA
+        df_cari = df.groupby(["VKN", "Firma Unvaný"]).agg(
+            Fatura_Sayisi=("Fatura No", "count"),
+            Toplam_KDV_Haric=("XML KDV Haric", "sum"),
+            Toplam_KDV=("XML KDV Tutari", "sum")
+        ).reset_index().sort_values(by="Toplam_KDV_Haric", ascending=False)
+        
+        # Rakamlarý biçimlendirme
+        df_cari["Toplam_KDV_Haric"] = df_cari["Toplam_KDV_Haric"].apply(lambda x: f"{x:,.2f} TL")
+        df_cari["Toplam_KDV"] = df_cari["Toplam_KDV"].apply(lambda x: f"{x:,.2f} TL")
+        
+        st.dataframe(df_cari, use_container_width=True, hide_index=True)
+        
+        genel_toplam = df["XML KDV Haric"].sum()
+        st.success(f"**ALIMLAR GENEL DÝP TOPLAM:** {genel_toplam:,.2f} TL")
+    else:
+        st.warning("Lütfen önce 1. Sekmeden verileri eþleþtirin.")
+
+# ==========================================
+# 3. SEKME: GÝB KDV-1 BEYANNAME TASLAÐI
+# ==========================================
+with sekme_beyanname:
+    st.markdown("### ?? KDV-1 Taslaðý (Netleþmiþ Verilerle)")
+    if "temiz_xml" in st.session_state:
+        net_indirilecek = st.session_state["temiz_xml"]["XML KDV Tutari"].sum()
+        
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            st.markdown("#### ?? ÝNDÝRÝMLER (Netleþen Alýþlar)")
+            st.info(f"**Dönem Ýndirilecek KDV:** {net_indirilecek:,.2f} TL")
+            devreden = st.number_input("Önceki Dönem Devreden KDV", 0.0)
+            toplam_indirim = net_indirilecek + devreden
+            
+        with col_b2:
+            st.markdown("#### ?? MATRAH (Netleþen Satýþlar)")
+            hesaplanan = st.number_input("Hesaplanan KDV (Toplam)", 0.0, step=1000.0)
+            
+        st.markdown("---")
+        fark = hesaplanan - toplam_indirim
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.metric("?? Ödenmesi Gereken KDV", f"{max(0, fark):,.2f} TL")
+        with c2:
+            st.metric("?? Sonraki Döneme Devreden KDV", f"{max(0, -fark):,.2f} TL")
+    else:
+        st.warning("Veriler henüz denetlenmedi.")
